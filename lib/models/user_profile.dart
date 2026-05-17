@@ -30,28 +30,42 @@ class UserProfile {
   }
 
   factory UserProfile.fromJson(Map<String, dynamic> json) {
-    final breakfastParts = (json['breakfastTime'] as String).split(':');
-    final lunchParts = (json['lunchTime'] as String).split(':');
-    final dinnerParts = (json['dinnerTime'] as String).split(':');
-
     return UserProfile(
-      name: json['name'] as String,
-      age: json['age'] as int,
-      weight: (json['weight'] as num).toDouble(),
-      height: (json['height'] as num).toDouble(),
-      breakfastTime: TimeOfDay(
-        hour: int.parse(breakfastParts[0]),
-        minute: int.parse(breakfastParts[1]),
-      ),
-      lunchTime: TimeOfDay(
-        hour: int.parse(lunchParts[0]),
-        minute: int.parse(lunchParts[1]),
-      ),
-      dinnerTime: TimeOfDay(
-        hour: int.parse(dinnerParts[0]),
-        minute: int.parse(dinnerParts[1]),
-      ),
+      name: (json['name'] as String?)?.trim().isNotEmpty == true
+          ? json['name'] as String
+          : 'User',
+      age: _readInt(json['age'], fallback: 30),
+      weight: _readDouble(json['weight'], fallback: 60.0),
+      height: _readDouble(json['height'], fallback: 165.0),
+      breakfastTime: _parseTime(json['breakfastTime'], fallbackHour: 8),
+      lunchTime: _parseTime(json['lunchTime'], fallbackHour: 13),
+      dinnerTime: _parseTime(json['dinnerTime'], fallbackHour: 20),
     );
+  }
+
+  static int _readInt(dynamic value, {required int fallback}) {
+    if (value is int) return value;
+    if (value is num) return value.toInt();
+    if (value is String) return int.tryParse(value) ?? fallback;
+    return fallback;
+  }
+
+  static double _readDouble(dynamic value, {required double fallback}) {
+    if (value is num) return value.toDouble();
+    if (value is String) return double.tryParse(value) ?? fallback;
+    return fallback;
+  }
+
+  static TimeOfDay _parseTime(dynamic value, {required int fallbackHour}) {
+    if (value is String && value.contains(':')) {
+      final parts = value.split(':');
+      final h = int.tryParse(parts[0]);
+      final m = parts.length > 1 ? int.tryParse(parts[1]) : 0;
+      if (h != null && h >= 0 && h < 24 && m != null && m >= 0 && m < 60) {
+        return TimeOfDay(hour: h, minute: m);
+      }
+    }
+    return TimeOfDay(hour: fallbackHour, minute: 0);
   }
 }
 

@@ -404,21 +404,21 @@ class _ProfileScreenState extends State<ProfileScreen> {
                   icon: Icons.restore_rounded,
                   label: 'Restore Purchases',
                   onTap: () async {
-                    await _subscription.restorePurchases();
-                    await Future.delayed(const Duration(seconds: 2));
-                    _loadProfile();
-                    if (mounted) {
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        SnackBar(
-                          content: Text(_subscription.isPro
-                              ? 'Pro subscription restored!'
-                              : 'No active subscription found'),
-                          backgroundColor: _subscription.isPro
-                              ? AppTheme.successGreen
-                              : null,
-                        ),
-                      );
-                    }
+                    final outcome = await _subscription.restorePurchases();
+                    if (!mounted) return;
+                    await _loadProfile();
+                    if (!mounted) return;
+                    final granted = outcome == PurchaseOutcome.success ||
+                        _subscription.isPro;
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(
+                        content: Text(granted
+                            ? 'Pro subscription restored!'
+                            : 'No active subscription found'),
+                        backgroundColor:
+                            granted ? AppTheme.successGreen : null,
+                      ),
+                    );
                   },
                 ),
                 _MenuRow(

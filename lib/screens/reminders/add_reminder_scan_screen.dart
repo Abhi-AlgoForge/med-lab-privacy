@@ -20,9 +20,33 @@ class _AddReminderScanScreenState extends State<AddReminderScanScreen> {
   final GeminiService _geminiService = GeminiService();
   final StorageService _storage = StorageService();
   bool _isLoading = false;
+  bool _isPicking = false;
   File? _selectedImage;
 
-  Future<void> _requestCameraPermission() async {
+  /// Returns true when the user grants (or has already granted) camera
+  /// permission. Shows a friendly rationale before the system prompt.
+  Future<bool> _requestCameraPermission() async {
+    final current = await Permission.camera.status;
+    if (current.isGranted || current.isLimited) return true;
+
+    if (current.isPermanentlyDenied) {
+      return _showOpenSettingsDialog(
+        title: 'Camera access is off',
+        message:
+            'MedLab needs your camera to scan prescriptions. '
+            'You can enable it in Settings.',
+      );
+    }
+
+    final consented = await _showRationaleDialog(
+      title: 'Use your camera?',
+      message:
+          'We use your camera only to scan your prescription. '
+          'The photo is sent to Google Gemini for analysis and is not '
+          'stored on our servers.',
+    );
+    if (!consented) return false;
+
     final status = await Permission.camera.request();
     if (!status.isGranted && mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -32,17 +56,79 @@ class _AddReminderScanScreenState extends State<AddReminderScanScreen> {
         ),
       );
     }
+    return status.isGranted;
+  }
+
+  Future<bool> _showRationaleDialog({
+    required String title,
+    required String message,
+  }) async {
+    if (!mounted) return false;
+    final result = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(title),
+        content: Text(message),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('Not now'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: const Text('Continue'),
+          ),
+        ],
+      ),
+    );
+    return result == true;
+  }
+
+  Future<bool> _showOpenSettingsDialog({
+    required String title,
+    required String message,
+  }) async {
+    if (!mounted) return false;
+    final opened = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(title),
+        content: Text(message),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: const Text('Open Settings'),
+          ),
+        ],
+      ),
+    );
+    if (opened == true) {
+      await openAppSettings();
+    }
+    return false;
   }
 
   Future<void> _pickImage(ImageSource source) async {
+    // Prevent double-tap from launching two pickers / two Gemini calls.
+    if (_isPicking || _isLoading) return;
+    _isPicking = true;
     try {
       if (source == ImageSource.camera) {
-        await _requestCameraPermission();
+        final granted = await _requestCameraPermission();
+        if (!granted) return;
       }
 
       final XFile? image = await _picker.pickImage(
         source: source,
         imageQuality: 85,
+        // Cap dimensions so a 50MP camera shot doesn't OOM low-end
+        // devices and doesn't balloon the Gemini token bill.
+        maxWidth: 1600,
+        maxHeight: 1600,
       );
 
       if (image != null) {
@@ -53,14 +139,39 @@ class _AddReminderScanScreenState extends State<AddReminderScanScreen> {
       }
     } catch (e) {
       if (!mounted) return;
-      
+
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text('Error picking image: $e'),
           backgroundColor: AppTheme.warningRed,
         ),
       );
+    } finally {
+      _isPicking = false;
     }
+  }
+
+  Future<void> _showCouldNotRecognizeDialog({
+    required String title,
+    required String message,
+  }) async {
+    if (!mounted) return;
+    final colorScheme = Theme.of(context).colorScheme;
+    await showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        icon: Icon(Icons.image_search_rounded,
+            color: colorScheme.primary, size: 48),
+        title: Text(title),
+        content: Text(message),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: const Text('Try Again'),
+          ),
+        ],
+      ),
+    );
   }
 
   Future<void> _analyzePrescription() async {
@@ -73,12 +184,16 @@ class _AddReminderScanScreenState extends State<AddReminderScanScreen> {
 
       if (!mounted) return;
 
-      if (medicines.isEmpty) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('No medicines found in prescription'),
-            backgroundColor: AppTheme.cautionOrange,
-          ),
+      // Gemini's "Not a Prescription" sentinel arrives as a single
+      // medicine with that literal name — don't push it into the
+      // result screen where it would render as a real reminder.
+      final isNotPrescriptionSentinel = medicines.length == 1 &&
+          medicines.first.medicineName == 'Not a Prescription';
+      if (medicines.isEmpty || isNotPrescriptionSentinel) {
+        await _showCouldNotRecognizeDialog(
+          title: "Couldn't read this prescription",
+          message:
+              "We couldn't find any medications in that image. Try a clearer photo of the prescription — make sure the medicine names and timing are readable.",
         );
         return;
       }
@@ -87,24 +202,32 @@ class _AddReminderScanScreenState extends State<AddReminderScanScreen> {
       final history = await _storage.getMedicineHistory();
       if (history.isNotEmpty && mounted) {
         final priorNames = history.map((m) => m.name).toList();
-        final warning = await _geminiService.checkPrescriptionInteractions(
+        final result = await _geminiService.checkPrescriptionInteractions(
           newPrescription: medicines,
           priorMedicineNames: priorNames,
         );
-        if (warning != null && warning.isNotEmpty && mounted) {
+        if (result.hasWarning && mounted) {
           await showDialog(
             context: context,
             builder: (ctx) => AlertDialog(
               icon: const Icon(Icons.medication_rounded,
                   color: Colors.orange, size: 48),
               title: const Text('Drug Interaction Warning'),
-              content: SingleChildScrollView(child: Text(warning)),
+              content: SingleChildScrollView(child: Text(result.warning!)),
               actions: [
                 TextButton(
                   onPressed: () => Navigator.pop(ctx),
                   child: const Text('OK'),
                 ),
               ],
+            ),
+          );
+        } else if (!result.checked && mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text(
+                  "Couldn't check drug interactions — review manually."),
+              duration: Duration(seconds: 4),
             ),
           );
         }

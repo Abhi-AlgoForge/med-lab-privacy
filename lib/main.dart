@@ -6,6 +6,7 @@ import 'package:timezone/data/latest_all.dart' as tz;
 import 'package:flutter_timezone/flutter_timezone.dart';
 import 'package:timezone/timezone.dart' as tz_lib;
 import 'theme/app_theme.dart';
+import 'screens/onboarding/onboarding_screen.dart';
 import 'screens/profile/profile_setup_screen.dart';
 import 'screens/home/home_screen.dart';
 import 'package:firebase_core/firebase_core.dart';
@@ -71,10 +72,16 @@ class ThemeNotifier extends ChangeNotifier {
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  // Initialize timezone
+  // Initialize timezone — fall back to UTC if the device reports an
+  // unknown zone, which can happen on stripped emulator images and
+  // some rooted ROMs.
   tz.initializeTimeZones();
-  final timeZoneName = await FlutterTimezone.getLocalTimezone();
-  tz_lib.setLocalLocation(tz_lib.getLocation(timeZoneName));
+  try {
+    final timeZoneName = await FlutterTimezone.getLocalTimezone();
+    tz_lib.setLocalLocation(tz_lib.getLocation(timeZoneName));
+  } catch (_) {
+    tz_lib.setLocalLocation(tz_lib.getLocation('UTC'));
+  }
 
   // Initialize Firebase & Remote Config
   await Firebase.initializeApp();
@@ -180,12 +187,13 @@ class _SplashScreenState extends State<SplashScreen>
     await Future.delayed(const Duration(milliseconds: 2200));
     if (!mounted) return;
 
-    if (!mounted) return;
-
+    final onboardingDone = await _storage.isOnboardingComplete();
     final userProfile = await _storage.getUserProfile();
 
-    Widget nextScreen;
-    if (userProfile == null) {
+    final Widget nextScreen;
+    if (!onboardingDone) {
+      nextScreen = const OnboardingScreen();
+    } else if (userProfile == null) {
       nextScreen = const ProfileSetupScreen();
     } else {
       nextScreen = const HomeScreen();

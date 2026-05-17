@@ -51,9 +51,19 @@ android {
     buildTypes {
         release {
             signingConfig = signingConfigs.getByName("release")
+            // R8 minification + resource shrinking. Required keep-rules
+            // live in proguard-rules.pro — without it, release builds
+            // crash on first ad / IAP / notification reflection call.
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro"
+            )
         }
         debug {
-            signingConfig = signingConfigs.getByName("release")
+            // Default debug signing — don't pollute debug APKs with the
+            // release signing identity.
         }
     }
 }

@@ -57,10 +57,13 @@ class _PrescriptionResultScreenState extends State<PrescriptionResultScreen> {
       };
       await _storage.addPrescriptionScan(scanData);
 
-      for (final medicine in _editableMedicines) {
+      final batchStamp = DateTime.now().millisecondsSinceEpoch;
+      for (int i = 0; i < _editableMedicines.length; i++) {
+        final medicine = _editableMedicines[i];
         final reminder = MedicationReminder(
-          id: DateTime.now().millisecondsSinceEpoch.toString() +
-              _editableMedicines.indexOf(medicine).toString(),
+          // Unique even when two prescribed medicines share a name —
+          // indexOf would return the first match and collide.
+          id: '${batchStamp}_$i',
           medicineName: medicine.medicineName,
           timing: _stringToTiming(medicine.timing),
           beforeEating: medicine.beforeEating,

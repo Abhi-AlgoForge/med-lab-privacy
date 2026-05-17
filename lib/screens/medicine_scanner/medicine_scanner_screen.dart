@@ -25,11 +25,36 @@ class _MedicineScannerScreenState extends State<MedicineScannerScreen> {
   final AdService _adService = AdService();
   bool _isLoading = false;
   bool _isCancelled = false;
+  bool _isPicking = false;
   File? _selectedImage;
   String _loadingTitle = 'Analyzing...';
   String _loadingSubtitle = 'This may take a few moments';
 
-  Future<void> _requestCameraPermission() async {
+  /// Returns true when the user grants (or has already granted) camera
+  /// permission. Shows a friendly rationale before the system prompt, and
+  /// a "go to settings" path when the user has permanently denied.
+  Future<bool> _requestCameraPermission() async {
+    final current = await Permission.camera.status;
+    if (current.isGranted || current.isLimited) return true;
+
+    if (current.isPermanentlyDenied) {
+      return _showOpenSettingsDialog(
+        title: 'Camera access is off',
+        message:
+            'MedLab needs your camera to scan medicine packaging and bills. '
+            'You can enable it in Settings.',
+      );
+    }
+
+    final consented = await _showRationaleDialog(
+      title: 'Use your camera?',
+      message:
+          'We use your camera only to scan medicines and bills with AI. '
+          'Images stay on your device — only the photo you scan is sent to '
+          'Google Gemini for analysis.',
+    );
+    if (!consented) return false;
+
     final status = await Permission.camera.request();
     if (!status.isGranted && mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -38,17 +63,79 @@ class _MedicineScannerScreenState extends State<MedicineScannerScreen> {
         ),
       );
     }
+    return status.isGranted;
+  }
+
+  Future<bool> _showRationaleDialog({
+    required String title,
+    required String message,
+  }) async {
+    if (!mounted) return false;
+    final result = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(title),
+        content: Text(message),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('Not now'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: const Text('Continue'),
+          ),
+        ],
+      ),
+    );
+    return result == true;
+  }
+
+  Future<bool> _showOpenSettingsDialog({
+    required String title,
+    required String message,
+  }) async {
+    if (!mounted) return false;
+    final opened = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(title),
+        content: Text(message),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: const Text('Open Settings'),
+          ),
+        ],
+      ),
+    );
+    if (opened == true) {
+      await openAppSettings();
+    }
+    return false;
   }
 
   Future<void> _pickImage(ImageSource source) async {
+    // Prevent double-tap from launching two pickers / two Gemini calls.
+    if (_isPicking || _isLoading) return;
+    _isPicking = true;
     try {
       if (source == ImageSource.camera) {
-        await _requestCameraPermission();
+        final granted = await _requestCameraPermission();
+        if (!granted) return;
       }
 
       final XFile? image = await _picker.pickImage(
         source: source,
         imageQuality: 85,
+        // Cap dimensions so a 50MP camera shot doesn't OOM low-end
+        // devices and doesn't balloon the Gemini token bill.
+        maxWidth: 1600,
+        maxHeight: 1600,
       );
 
       if (image != null) {
@@ -74,6 +161,8 @@ class _MedicineScannerScreenState extends State<MedicineScannerScreen> {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Error picking image: $e')),
       );
+    } finally {
+      _isPicking = false;
     }
   }
 
@@ -185,6 +274,29 @@ class _MedicineScannerScreenState extends State<MedicineScannerScreen> {
     );
   }
 
+  Future<void> _showCouldNotRecognizeDialog({
+    required String title,
+    required String message,
+  }) async {
+    if (!mounted) return;
+    final colorScheme = Theme.of(context).colorScheme;
+    await showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        icon: Icon(Icons.image_search_rounded,
+            color: colorScheme.primary, size: 48),
+        title: Text(title),
+        content: Text(message),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: const Text('Try Again'),
+          ),
+        ],
+      ),
+    );
+  }
+
   void _stopAnalysis() {
     setState(() {
       _isCancelled = true;
@@ -212,8 +324,18 @@ class _MedicineScannerScreenState extends State<MedicineScannerScreen> {
 
       if (!mounted || _isCancelled) return;
 
-      // Skip saving if it's a "Not a Medicine" result
-      if (medicine.name != 'Not a Medicine') {
+      // Gemini's "Not a Medicine" sentinel — abort cleanly instead of
+      // routing the user into a result screen full of empty fields.
+      if (medicine.name == 'Not a Medicine') {
+        await _showCouldNotRecognizeDialog(
+          title: "Couldn't identify a medicine",
+          message:
+              "We couldn't recognize a medicine in that image. Try a clearer photo of the packaging or tablet — make sure the brand or generic name is visible.",
+        );
+        return;
+      }
+
+      {
         // Save to history
         await _storage.addMedicineToHistory(medicine);
 
@@ -226,12 +348,20 @@ class _MedicineScannerScreenState extends State<MedicineScannerScreen> {
         // Exclude the just-scanned medicine from history for comparison
         final priorMedicines = history.where((m) => m.id != medicine.id).toList();
         if (priorMedicines.isNotEmpty) {
-          final warning = await _geminiService.checkDrugInteractions(
+          final result = await _geminiService.checkDrugInteractions(
             newMedicine: medicine,
             history: priorMedicines,
           );
-          if (warning != null && warning.isNotEmpty) {
-            medicine = medicine.copyWith(interactionWarning: warning);
+          if (result.hasWarning) {
+            medicine = medicine.copyWith(interactionWarning: result.warning);
+          } else if (!result.checked && mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text(
+                    "Couldn't check drug interactions — review manually."),
+                duration: Duration(seconds: 4),
+              ),
+            );
           }
         }
       }
@@ -281,6 +411,17 @@ class _MedicineScannerScreenState extends State<MedicineScannerScreen> {
       final billAnalysis = await _geminiService.analyzeBill(_selectedImage!);
 
       if (!mounted || _isCancelled) return;
+
+      // Gemini's "Not a Medical Bill" sentinel — don't pass it through to
+      // BillResultScreen where it would render as a misleading "clean" verdict.
+      if (billAnalysis.hospitalName == 'Not a Medical Bill') {
+        await _showCouldNotRecognizeDialog(
+          title: "Couldn't identify a medical bill",
+          message:
+              "We couldn't recognize a medical bill in that image. Try a clearer photo of the full bill or receipt — the line items and totals should be readable.",
+        );
+        return;
+      }
 
       // Increment scan count & show ad for free users
       await _storage.incrementScanCount();

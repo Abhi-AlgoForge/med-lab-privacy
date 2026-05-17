@@ -1,9 +1,26 @@
 import 'dart:io';
 import 'dart:convert';
+import 'package:flutter/foundation.dart';
 import 'package:google_generative_ai/google_generative_ai.dart';
 import 'package:firebase_remote_config/firebase_remote_config.dart';
 import '../models/medicine.dart';
 import '../models/bill_analysis.dart';
+
+/// Result of a drug-interaction check.
+///
+/// [warning] is non-null when an interaction is detected. [checked] is false
+/// when the network call or model response failed — callers must distinguish
+/// "we looked and found nothing" from "we couldn't look", because the latter
+/// is medically relevant.
+class InteractionCheckResult {
+  final String? warning;
+  final bool checked;
+  const InteractionCheckResult.ok({this.warning}) : checked = true;
+  const InteractionCheckResult.failed()
+      : warning = null,
+        checked = false;
+  bool get hasWarning => warning != null && warning!.isNotEmpty;
+}
 
 class GeminiService {
   late final GenerativeModel _model;
@@ -123,6 +140,21 @@ If you can partially identify the medicine, provide the best analysis possible b
       return json;
     } catch (e) {
       throw Exception('Failed to analyze medicine: $e');
+    } finally {
+      // Don't leave a forensic trail of every medicine the user scanned in
+      // the temp cache. image_picker writes here; nothing else needs it.
+      _deleteSilently(imageFile);
+    }
+  }
+
+  /// Best-effort cleanup of a picked-image temp file. Failures are ignored.
+  Future<void> _deleteSilently(File file) async {
+    try {
+      if (await file.exists()) {
+        await file.delete();
+      }
+    } catch (e) {
+      debugPrint('Failed to delete scanned image: $e');
     }
   }
 
@@ -194,16 +226,18 @@ If eating preference is not specified, use "beforeEating": true as default.
           .toList();
     } catch (e) {
       throw Exception('Failed to analyze prescription: $e');
+    } finally {
+      _deleteSilently(imageFile);
     }
   }
 
   /// Check drug interactions between a new medicine and previously scanned medicines
-  Future<String?> checkDrugInteractions({
+  Future<InteractionCheckResult> checkDrugInteractions({
     required Medicine newMedicine,
     required List<Medicine> history,
   }) async {
     try {
-      if (history.isEmpty) return null;
+      if (history.isEmpty) return const InteractionCheckResult.ok();
 
       final previousMeds = history
           .take(20) // Limit to last 20 to keep prompt manageable
@@ -235,21 +269,22 @@ Return ONLY the warning text or NO_INTERACTION. No JSON, no markdown.
       final text = (response.text ?? '').trim();
 
       if (text.isEmpty || text == 'NO_INTERACTION' || text.contains('NO_INTERACTION')) {
-        return null;
+        return const InteractionCheckResult.ok();
       }
-      return text;
-    } catch (_) {
-      return null;
+      return InteractionCheckResult.ok(warning: text);
+    } catch (e) {
+      debugPrint('Drug interaction check failed: $e');
+      return const InteractionCheckResult.failed();
     }
   }
 
   /// Check drug interactions for a prescription against previously scanned medicines
-  Future<String?> checkPrescriptionInteractions({
+  Future<InteractionCheckResult> checkPrescriptionInteractions({
     required List<PrescriptionMedicine> newPrescription,
     required List<String> priorMedicineNames,
   }) async {
     try {
-      if (priorMedicineNames.isEmpty) return null;
+      if (priorMedicineNames.isEmpty) return const InteractionCheckResult.ok();
 
       final newMeds =
           newPrescription.map((p) => '- ${p.medicineName}').join('\n');
@@ -279,11 +314,12 @@ Return ONLY the warning text or NO_INTERACTION. No JSON, no markdown.
       final text = (response.text ?? '').trim();
 
       if (text.isEmpty || text == 'NO_INTERACTION' || text.contains('NO_INTERACTION')) {
-        return null;
+        return const InteractionCheckResult.ok();
       }
-      return text;
-    } catch (_) {
-      return null;
+      return InteractionCheckResult.ok(warning: text);
+    } catch (e) {
+      debugPrint('Prescription interaction check failed: $e');
+      return const InteractionCheckResult.failed();
     }
   }
 
@@ -392,6 +428,8 @@ Rules:
       return json;
     } catch (e) {
       throw Exception('Failed to analyze bill: $e');
+    } finally {
+      _deleteSilently(imageFile);
     }
   }
 

@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
+import 'package:permission_handler/permission_handler.dart';
 import '../../theme/app_theme.dart';
 import '../../widgets/reminder_card.dart';
 import '../../widgets/streak_banner.dart';
@@ -35,8 +36,69 @@ class _RemindersScreenState extends State<RemindersScreen> {
   }
 
   Future<void> _initializeNotifications() async {
+    // Just wire up the plugin — do NOT cold-fire the OS permission prompt
+    // here. We request permission contextually in [_ensureNotificationsAllowed]
+    // when the user actually creates their first reminder.
     await _notificationService.initialize();
-    await _notificationService.requestPermissions();
+  }
+
+  /// Request notification permission with a rationale dialog. Called right
+  /// before the add-reminder sheet so the prompt is contextual.
+  /// Returns true if reminders will fire (granted or already granted).
+  Future<bool> _ensureNotificationsAllowed() async {
+    final current = await Permission.notification.status;
+    if (current.isGranted) return true;
+
+    if (current.isPermanentlyDenied) {
+      if (!mounted) return false;
+      final opened = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('Notifications are off'),
+          content: const Text(
+            'MedLab needs to send notifications so you never miss a dose. '
+            'You can enable them in Settings.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(ctx).pop(false),
+              child: const Text('Not now'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(ctx).pop(true),
+              child: const Text('Open Settings'),
+            ),
+          ],
+        ),
+      );
+      if (opened == true) await openAppSettings();
+      return false;
+    }
+
+    if (!mounted) return false;
+    final consented = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Enable reminders?'),
+        content: const Text(
+          'We use notifications to remind you to take your medications on '
+          'time. You can turn them off any time.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('Not now'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: const Text('Enable'),
+          ),
+        ],
+      ),
+    );
+    if (consented != true) return false;
+
+    return await _notificationService.requestPermissions();
   }
 
   Future<void> _loadReminders() async {
@@ -212,7 +274,12 @@ class _RemindersScreenState extends State<RemindersScreen> {
     }
   }
 
-  void _showAddReminderOptions() {
+  Future<void> _showAddReminderOptions() async {
+    // Ask for notification permission with rationale on the user's first
+    // intent to add a reminder. If they decline, reminders are still saved
+    // but notifications won't fire — they can re-enable from system settings.
+    await _ensureNotificationsAllowed();
+    if (!mounted) return;
     showModalBottomSheet(
       context: context,
       backgroundColor: Colors.transparent,

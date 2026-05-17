@@ -43,11 +43,28 @@ class NotificationService {
   }
 
   Future<bool> requestPermissions() async {
-    if (await Permission.notification.isGranted) {
-      return true;
+    // Notification permission (Android 13+ / iOS)
+    bool granted = await Permission.notification.isGranted;
+    if (!granted) {
+      final status = await Permission.notification.request();
+      granted = status.isGranted;
     }
-    final status = await Permission.notification.request();
-    return status.isGranted;
+
+    // Exact alarm permission (Android 12+). Required for `exactAllowWhileIdle`
+    // scheduling — falls back to inexact silently if denied, which would
+    // make medication reminders drift under Doze.
+    final androidPlugin = _notifications
+        .resolvePlatformSpecificImplementation<
+            AndroidFlutterLocalNotificationsPlugin>();
+    if (androidPlugin != null) {
+      try {
+        await androidPlugin.requestExactAlarmsPermission();
+      } catch (_) {
+        // Plugin/SDK doesn't support the call on this device — exact
+        // alarms will be scheduled as best-effort.
+      }
+    }
+    return granted;
   }
 
   Future<void> scheduleReminder({
@@ -77,7 +94,7 @@ class NotificationService {
     final minutes = reminder.beforeEating ? -30 : 30;
     final adjustedTime = _adjustTime(scheduleTime, minutes);
 
-    final notificationId = reminder.id.hashCode;
+    final notificationId = reminder.notificationId;
 
     const androidDetails = AndroidNotificationDetails(
       'medication_reminders',
@@ -126,7 +143,7 @@ class NotificationService {
       notificationDetails,
       uiLocalNotificationDateInterpretation:
           UILocalNotificationDateInterpretation.absoluteTime,
-      androidScheduleMode: AndroidScheduleMode.inexactAllowWhileIdle,
+      androidScheduleMode: AndroidScheduleMode.exactAllowWhileIdle,
       matchDateTimeComponents: DateTimeComponents.time,
     );
   }
@@ -144,7 +161,7 @@ class NotificationService {
   }
 
   Future<void> cancelReminder(MedicationReminder reminder) async {
-    final notificationId = reminder.id.hashCode;
+    final notificationId = reminder.notificationId;
     await _notifications.cancel(notificationId);
   }
 

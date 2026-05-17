@@ -3,6 +3,53 @@ import '../../theme/app_theme.dart';
 import '../../services/subscription_service.dart';
 import '../../services/storage_service.dart';
 
+// Inline legal copy shown on the paywall. Replace these with hosted-URL
+// launches (url_launcher → https://yourdomain/terms etc.) once the
+// production policy pages are live; Play and App Store require the
+// links to be present and functional on any subscription paywall.
+const String _kTermsBody = '''
+MedLab Pro Subscription Terms
+
+By subscribing to MedLab Pro you agree to the following:
+
+• Billing — Your subscription is billed monthly through Google Play (or the App Store on iOS) at the price shown on this screen. Prices may vary by region.
+
+• Auto-renewal — Your subscription renews automatically at the end of each billing period unless cancelled at least 24 hours before the renewal date.
+
+• Cancellation — You can cancel any time from your Google Play (or App Store) account settings. Cancellation takes effect at the end of the current billing period; partial-period refunds are not provided.
+
+• Refunds — Refund requests are handled by Google Play / App Store per their respective policies.
+
+• Service — MedLab Pro unlocks unlimited scans and removes ads. Features may evolve over time. We may modify or discontinue Pro features with reasonable notice.
+
+• Medical disclaimer — MedLab is an informational tool. It does not provide medical advice, diagnosis, or treatment. Always consult a licensed healthcare professional before making medical decisions.
+
+These terms are governed by the laws of your country of residence to the extent required by local consumer-protection law. For questions, contact us via the email listed in the Play Store / App Store listing.
+''';
+
+const String _kPrivacyBody = '''
+MedLab Privacy Summary
+
+Data collected on-device only (never leaves your phone):
+• Your profile — name, age, weight, height, meal times.
+• Medication reminders and dose history.
+• Scan history (medicines, prescriptions, bills) and previews.
+
+Data sent to third parties:
+• Photos you scan are sent to Google Gemini for AI analysis. Google's terms apply to that processing. We do not store these images on our own servers.
+• Google AdMob may collect your advertising ID to show ads (Pro users see no ads).
+• Google Play Billing handles your purchase securely; we receive only the subscription status.
+• Firebase Remote Config fetches configuration values from Google.
+
+What we don't do:
+• We do not require an account or collect your email.
+• We do not sell your data to third parties.
+
+You can clear all locally stored data from your device's Settings → Apps → MedLab → Storage.
+
+For the full policy, see the link in our Play Store / App Store listing.
+''';
+
 class PaywallScreen extends StatefulWidget {
   const PaywallScreen({Key? key}) : super(key: key);
 
@@ -17,44 +64,98 @@ class _PaywallScreenState extends State<PaywallScreen> {
 
   Future<void> _purchase() async {
     setState(() => _isLoading = true);
-    try {
-      await _subscription.buyMonthly();
-      // Purchase result is handled by the stream listener
-      // Wait a moment for the stream to process
-      await Future.delayed(const Duration(seconds: 2));
-      if (mounted && _subscription.isPro) {
-        Navigator.of(context).pop(true);
-      }
-    } catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Purchase failed: $e')),
-      );
-    } finally {
-      if (mounted) setState(() => _isLoading = false);
-    }
-  }
+    final outcome = await _subscription.buyMonthly();
+    if (!mounted) return;
+    setState(() => _isLoading = false);
 
-  Future<void> _restore() async {
-    setState(() => _isRestoring = true);
-    try {
-      await _subscription.restorePurchases();
-      await Future.delayed(const Duration(seconds: 2));
-      if (mounted && _subscription.isPro) {
+    switch (outcome) {
+      case PurchaseOutcome.success:
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
-            content: Text('Pro subscription restored!'),
+            content: Text('Welcome to Pro!'),
             backgroundColor: AppTheme.successGreen,
           ),
         );
         Navigator.of(context).pop(true);
-      } else if (mounted) {
+        break;
+      case PurchaseOutcome.alreadyOwned:
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('No active subscription found')),
+          const SnackBar(
+            content: Text(
+                'You already own Pro — tap "Restore Purchases" to activate.'),
+          ),
         );
-      }
-    } finally {
-      if (mounted) setState(() => _isRestoring = false);
+        break;
+      case PurchaseOutcome.cancelled:
+        // User backed out of the Play sheet — no feedback needed.
+        break;
+      case PurchaseOutcome.unavailable:
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+                'Subscription is unavailable right now. Please try again later.'),
+          ),
+        );
+        break;
+      case PurchaseOutcome.timeout:
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+                "The store didn't respond. If you were charged, tap Restore Purchases."),
+            duration: Duration(seconds: 5),
+          ),
+        );
+        break;
+      case PurchaseOutcome.error:
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Purchase failed. Please try again.')),
+        );
+        break;
+    }
+  }
+
+  void _showLegalDoc(BuildContext context,
+      {required String title, required String body}) {
+    showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(title),
+        content: SizedBox(
+          width: double.maxFinite,
+          child: SingleChildScrollView(child: Text(body)),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: const Text('Close'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _restore() async {
+    setState(() => _isRestoring = true);
+    final outcome = await _subscription.restorePurchases();
+    if (!mounted) return;
+    setState(() => _isRestoring = false);
+
+    if (outcome == PurchaseOutcome.success || _subscription.isPro) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Pro subscription restored!'),
+          backgroundColor: AppTheme.successGreen,
+        ),
+      );
+      Navigator.of(context).pop(true);
+    } else if (outcome == PurchaseOutcome.error) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Restore failed. Please try again.')),
+      );
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('No active subscription found')),
+      );
     }
   }
 
@@ -279,6 +380,65 @@ class _PaywallScreenState extends State<PaywallScreen> {
                           color: colorScheme.onSurfaceVariant.withOpacity(0.7),
                         ),
                         textAlign: TextAlign.center,
+                      ),
+                      const SizedBox(height: 6),
+
+                      // Required by Play / App Store on any subscription
+                      // paywall. Tappable links to the legal policies.
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          TextButton(
+                            onPressed: () => _showLegalDoc(
+                              context,
+                              title: 'Terms of Service',
+                              body: _kTermsBody,
+                            ),
+                            style: TextButton.styleFrom(
+                              foregroundColor: colorScheme.onSurfaceVariant,
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 8, vertical: 4),
+                              minimumSize: Size.zero,
+                              tapTargetSize:
+                                  MaterialTapTargetSize.shrinkWrap,
+                            ),
+                            child: const Text(
+                              'Terms of Service',
+                              style: TextStyle(
+                                  fontSize: 11,
+                                  decoration: TextDecoration.underline),
+                            ),
+                          ),
+                          Text(
+                            ' · ',
+                            style: TextStyle(
+                              fontSize: 11,
+                              color:
+                                  colorScheme.onSurfaceVariant.withOpacity(0.7),
+                            ),
+                          ),
+                          TextButton(
+                            onPressed: () => _showLegalDoc(
+                              context,
+                              title: 'Privacy Policy',
+                              body: _kPrivacyBody,
+                            ),
+                            style: TextButton.styleFrom(
+                              foregroundColor: colorScheme.onSurfaceVariant,
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 8, vertical: 4),
+                              minimumSize: Size.zero,
+                              tapTargetSize:
+                                  MaterialTapTargetSize.shrinkWrap,
+                            ),
+                            child: const Text(
+                              'Privacy Policy',
+                              style: TextStyle(
+                                  fontSize: 11,
+                                  decoration: TextDecoration.underline),
+                            ),
+                          ),
+                        ],
                       ),
                       const SizedBox(height: 16),
                     ],

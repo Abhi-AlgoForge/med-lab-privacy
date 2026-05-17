@@ -4,7 +4,11 @@ class MedicationReminder {
   final MedicationTiming timing;
   final bool beforeEating;
   final bool isActive;
-  final List<int> notificationIds;
+
+  // Stable 31-bit integer ID for the OS notification slot.
+  // Required because hashCode of strings can collide, silently cancelling
+  // unrelated reminders.
+  final int notificationId;
 
   MedicationReminder({
     required this.id,
@@ -12,8 +16,15 @@ class MedicationReminder {
     required this.timing,
     required this.beforeEating,
     this.isActive = true,
-    this.notificationIds = const [],
-  });
+    int? notificationId,
+  }) : notificationId = notificationId ?? _generateNotificationId();
+
+  static int _nextSeq = 0;
+  static int _generateNotificationId() {
+    final base = DateTime.now().microsecondsSinceEpoch & 0x7FFFFFFF;
+    _nextSeq = (_nextSeq + 1) & 0x7FFF;
+    return (base ^ _nextSeq) & 0x7FFFFFFF;
+  }
 
   MedicationReminder copyWith({
     String? id,
@@ -21,7 +32,7 @@ class MedicationReminder {
     MedicationTiming? timing,
     bool? beforeEating,
     bool? isActive,
-    List<int>? notificationIds,
+    int? notificationId,
   }) {
     return MedicationReminder(
       id: id ?? this.id,
@@ -29,7 +40,7 @@ class MedicationReminder {
       timing: timing ?? this.timing,
       beforeEating: beforeEating ?? this.beforeEating,
       isActive: isActive ?? this.isActive,
-      notificationIds: notificationIds ?? this.notificationIds,
+      notificationId: notificationId ?? this.notificationId,
     );
   }
 
@@ -40,24 +51,27 @@ class MedicationReminder {
       'timing': timing.toString(),
       'beforeEating': beforeEating,
       'isActive': isActive,
-      'notificationIds': notificationIds,
+      'notificationId': notificationId,
     };
   }
 
   factory MedicationReminder.fromJson(Map<String, dynamic> json) {
+    final id = (json['id'] as String?) ??
+        DateTime.now().millisecondsSinceEpoch.toString();
+    final storedNotifId = json['notificationId'];
+    final notifId = storedNotifId is int
+        ? storedNotifId
+        : (id.hashCode & 0x7FFFFFFF);
     return MedicationReminder(
-      id: json['id'] as String,
-      medicineName: json['medicineName'] as String,
+      id: id,
+      medicineName: (json['medicineName'] as String?) ?? 'Unknown medicine',
       timing: MedicationTiming.values.firstWhere(
         (e) => e.toString() == json['timing'],
         orElse: () => MedicationTiming.morning,
       ),
       beforeEating: json['beforeEating'] as bool? ?? true,
       isActive: json['isActive'] as bool? ?? true,
-      notificationIds: (json['notificationIds'] as List<dynamic>?)
-              ?.map((e) => e as int)
-              .toList() ??
-          [],
+      notificationId: notifId,
     );
   }
 }
